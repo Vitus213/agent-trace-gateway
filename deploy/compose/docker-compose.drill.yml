@@ -1,0 +1,20 @@
+# 自动拉起演练 compose：网关（多阶段容器内构建）+ 极简上游。
+services:
+  upstream:
+    image: python:3.12-slim
+    command: python -m http.server 8000
+    ports:
+      - "18000:8000"
+
+  agent-trace-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      ATG_LISTEN: "0.0.0.0:6180"
+      ATG_UPSTREAM: "upstream:8000"
+    ports:
+      - "16180:6180"
+    depends_on:
+      - upstream

@@ -1,0 +1,22 @@
+# agent-trace-gateway 部署（阶段 1 双跑形态）
+# Caddy 模型路由指向网关；网关上游指向 sub2api 容器。
+# 回滚：Caddy 路由切回直指 sub2api，本网关可 stop 不影响业务。
+services:
+  agent-trace-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      ATG_LISTEN: "0.0.0.0:6180"
+      ATG_UPSTREAM: "${ATG_UPSTREAM:?set upstream host:port}"
+      # 可选：ATG_OTLP_ENDPOINT / ATG_CAPTURE_MAX_BYTES / ATG_STITCH_CAPACITY / ATG_STITCH_TTL_MS
+      ATG_OTLP_ENDPOINT: "${ATG_OTLP_ENDPOINT:-}"
+    ports:
+      - "6180:6180"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/6180' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
