@@ -7,7 +7,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::client::legacy::Client;
@@ -22,7 +22,8 @@ fn manifest_dir() -> &'static str {
 }
 
 async fn post_with_session(path: &str, body: &str, session_header: Option<&str>) {
-    let mut req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}{path}"))
+    let gw = common::stack::gateway_port();
+    let mut req = Request::post(format!("http://127.0.0.1:{gw}{path}"))
         .header("content-type", "application/json");
     if let Some(h) = session_header {
         req = req.header("x-claude-code-session-id", h);
@@ -34,7 +35,8 @@ async fn post_with_session(path: &str, body: &str, session_header: Option<&str>)
 }
 
 async fn records() -> Vec<serde_json::Value> {
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let gw = common::stack::gateway_port();
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client().request(req).await.expect("records");
@@ -44,6 +46,7 @@ async fn records() -> Vec<serde_json::Value> {
 #[tokio::test]
 async fn explicit_session_stitch() {
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     // Real claude-cli samples: three turns of session 01a01f21-eae3-7000-9857-78f64c4de4cc,
     // session id inside metadata.user_id JSON envelope (no header on these).

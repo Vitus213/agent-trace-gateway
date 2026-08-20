@@ -6,7 +6,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::client::legacy::Client;
@@ -21,7 +21,8 @@ fn manifest_dir() -> &'static str {
 }
 
 async fn post_chat(body: &str) {
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/chat"))
+    let gw = common::stack::gateway_port();
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/chat"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap();
@@ -31,7 +32,8 @@ async fn post_chat(body: &str) {
 }
 
 async fn records() -> Vec<serde_json::Value> {
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let gw = common::stack::gateway_port();
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client().request(req).await.expect("records");
@@ -41,6 +43,7 @@ async fn records() -> Vec<serde_json::Value> {
 #[tokio::test]
 async fn prefix_stitch() {
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     let fixture_dir = format!("{}/xtask/harness/fixtures/openai_chat", manifest_dir());
     // Real omp tool-loop samples: turn4 (5 messages) then turn5 (7 messages).

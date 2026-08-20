@@ -4,7 +4,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::{FIXTURE_PORT, GATEWAY_PORT};
+use common::stack::gateway_port;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
 use hyper_util::client::legacy::Client;
@@ -12,10 +12,12 @@ use hyper_util::rt::TokioExecutor;
 
 #[tokio::test]
 async fn upstream_error_passthrough() {
+    let gw = common::stack::gateway_port();
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     // 404 from upstream must pass through with its body.
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/unknown"))
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/unknown"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from("{}")))
         .unwrap();
@@ -34,9 +36,9 @@ async fn upstream_error_passthrough() {
     assert!(text.contains("not found"), "upstream error body lost: {text}");
 
     // Connection refused upstream: gateway must answer with a 5xx, not hang.
-    let gw_port = GATEWAY_PORT + 100;
+    let gw_port = gw + 100;
     let listen = format!("127.0.0.1:{gw_port}");
-    let dead_upstream = format!("127.0.0.1:{}", FIXTURE_PORT + 500);
+    let dead_upstream = format!("127.0.0.1:{}", common::stack::fixture_port() + 500);
     let thread_listen = listen.clone();
     std::thread::spawn(move || {
         agent_trace_gateway::gateway_app::run(&thread_listen, &dead_upstream);

@@ -5,7 +5,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::client::legacy::Client;
@@ -16,7 +16,8 @@ fn client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Full<B
 }
 
 async fn post(path: &str, body: &str) {
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}{path}"))
+    let gw = common::stack::gateway_port();
+    let req = Request::post(format!("http://127.0.0.1:{gw}{path}"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap();
@@ -26,7 +27,8 @@ async fn post(path: &str, body: &str) {
 }
 
 async fn records() -> serde_json::Value {
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let gw = common::stack::gateway_port();
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client().request(req).await.expect("records endpoint");
@@ -38,6 +40,7 @@ async fn records() -> serde_json::Value {
 #[tokio::test]
 async fn unpack_nonstreaming() {
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     // openai chat completions
     post(

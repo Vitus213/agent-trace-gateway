@@ -4,7 +4,6 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::{GATEWAY_PORT};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
 use hyper_util::client::legacy::Client;
@@ -22,7 +21,9 @@ fn h2_client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Ful
 
 #[tokio::test]
 async fn transparent_forward() {
+    let gw = common::stack::gateway_port();
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     let body = serde_json::json!({
         "model": "gpt-test",
@@ -31,7 +32,7 @@ async fn transparent_forward() {
     });
 
     // HTTP/1.1 through the gateway.
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/chat"))
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/chat"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap();
@@ -52,7 +53,7 @@ async fn transparent_forward() {
     );
 
     // HTTP/2 prior knowledge through the gateway.
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/chat"))
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/chat"))
         .version(hyper::Version::HTTP_2)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))

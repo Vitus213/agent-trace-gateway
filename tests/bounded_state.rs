@@ -6,7 +6,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack_with_env;
-use common::stack::GATEWAY_PORT;
+
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::client::legacy::Client;
@@ -17,7 +17,8 @@ fn client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Full<B
 }
 
 async fn post_chat(body: &str) {
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/chat"))
+    let gw = common::stack::gateway_port();
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/chat"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap();
@@ -27,7 +28,8 @@ async fn post_chat(body: &str) {
 }
 
 async fn records() -> Vec<serde_json::Value> {
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let gw = common::stack::gateway_port();
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client().request(req).await.expect("records");

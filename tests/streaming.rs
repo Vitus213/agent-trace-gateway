@@ -3,7 +3,7 @@
 mod common;
 
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::client::legacy::Client;
@@ -14,9 +14,11 @@ use futures_util::StreamExt;
 
 #[tokio::test]
 async fn streaming_passthrough() {
+    let gw = common::stack::gateway_port();
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/sse"))
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/sse"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from("{\"stream\":true}")))
         .unwrap();

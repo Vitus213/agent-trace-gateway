@@ -6,7 +6,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
@@ -17,9 +17,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn ws_turn_reassembly() {
+    let gw = common::stack::gateway_port();
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
-    let url = format!("ws://127.0.0.1:{GATEWAY_PORT}/ws");
+    let url = format!("ws://127.0.0.1:{gw}/ws");
     let req = url.into_client_request().unwrap();
     let (mut ws, _) = tokio_tungstenite::connect_async(req)
         .await
@@ -56,7 +58,7 @@ async fn ws_turn_reassembly() {
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = Client::builder(TokioExecutor::new())

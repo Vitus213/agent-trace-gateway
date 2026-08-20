@@ -5,7 +5,7 @@ mod common;
 
 use bytes::Bytes;
 use common::stack::start_stack;
-use common::stack::GATEWAY_PORT;
+
 use futures_util::StreamExt;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
@@ -18,10 +18,12 @@ fn client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Full<B
 
 #[tokio::test]
 async fn sse_reassembly() {
+    let gw = common::stack::gateway_port();
     start_stack().await;
+    let gw = common::stack::gateway_port();
 
     // Streaming Responses request: fixture emits two output_text deltas + completed.
-    let req = Request::post(format!("http://127.0.0.1:{GATEWAY_PORT}/v1/responses"))
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/responses"))
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(
             r#"{"model":"m","stream":true,"input":"sse-user-text"}"#,
@@ -40,7 +42,7 @@ async fn sse_reassembly() {
     // Give the gateway logging phase a moment to record the turn.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let req = Request::get(format!("http://127.0.0.1:{GATEWAY_PORT}/__atg/records"))
+    let req = Request::get(format!("http://127.0.0.1:{gw}/__atg/records"))
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client().request(req).await.expect("records");

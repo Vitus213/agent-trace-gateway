@@ -10,9 +10,9 @@ use hyper::Request;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
-const FIXTURE_PORT: u16 = common::stack::FIXTURE_PORT;
-const GW1: u16 = common::stack::GATEWAY_PORT;
-const GW2: u16 = common::stack::GATEWAY_PORT + 2;
+const FIXTURE_PORT: u16 = 17961;
+const GW1: u16 = 17960;
+const GW2: u16 = 17962;
 
 fn client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>> {
     Client::builder(TokioExecutor::new()).build_http()
