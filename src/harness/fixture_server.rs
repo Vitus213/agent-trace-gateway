@@ -50,7 +50,85 @@ async fn handle(mut req: Request<Incoming>) -> Result<Response<BoxedBody>, Infal
             let body = req.collect().await.unwrap().to_bytes();
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
             let session = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("");
-            let resp = serde_json::json!({"ok": true, "echo_session": session, "reply": "chat-done"});
+            let user_text = v["messages"]
+                .as_array()
+                .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or("");
+            let resp = serde_json::json!({
+                "id": "chatcmpl-fixture",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": format!("echo:{user_text} sess:{session}")
+                    }
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            });
+            let mut r = Response::new(full(resp.to_string()));
+            r.headers_mut()
+                .insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());
+            Ok(r)
+        }
+        ("POST", "/v1/messages") => {
+            let body = req.collect().await.unwrap().to_bytes();
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let user_text = v["messages"]
+                .as_array()
+                .and_then(|m| m.last())
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or("");
+            let resp = serde_json::json!({
+                "id": "msg_fixture",
+                "type": "message",
+                "role": "assistant",
+                "model": v.get("model").cloned().unwrap_or_default(),
+                "content": [{"type": "text", "text": format!("echo:{user_text}")}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            });
+            let mut r = Response::new(full(resp.to_string()));
+            r.headers_mut()
+                .insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());
+            Ok(r)
+        }
+        ("POST", "/v1/responses") => {
+            let body = req.collect().await.unwrap().to_bytes();
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let input = v.get("input").and_then(|x| x.as_str()).unwrap_or("");
+            let stream = v.get("stream").and_then(|x| x.as_bool()).unwrap_or(false);
+            if stream {
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(8);
+                tokio::spawn(async move {
+                    let events = [
+                        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"echo-stream:\"}\n\n",
+                        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"part2\"}\n\n",
+                        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                    ];
+                    for ev in events {
+                        let _ = tx.send(Ok(Frame::data(Bytes::from(ev)))).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                    }
+                });
+                let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+                let body = BodyExt::boxed(StreamBody::new(stream));
+                let mut r = Response::new(body);
+                r.headers_mut()
+                    .insert(hyper::header::CONTENT_TYPE, "text/event-stream".parse().unwrap());
+                return Ok(r);
+            }
+            let resp = serde_json::json!({
+                "id": "resp_fixture",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": format!("echo:{input}")}]
+                }]
+            });
             let mut r = Response::new(full(resp.to_string()));
             r.headers_mut()
                 .insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());

@@ -1,21 +1,38 @@
 // agent-trace-gateway library: harness modules + gateway app.
 pub mod harness;
+pub mod trace;
 
 pub mod gateway_app {
     use async_trait::async_trait;
+    use bytes::Bytes;
+    use pingora::http::ResponseHeader;
     use pingora::prelude::*;
     use pingora::proxy::{http_proxy_service, ProxyHttp, Session};
     use pingora::upstreams::peer::HttpPeer;
 
+    use crate::trace::store::TraceStore;
+    use crate::trace::unpack;
+
     pub struct Gateway {
         pub upstream: String,
+        pub store: TraceStore,
+    }
+
+    pub struct Ctx {
+        pub req_buf: Vec<u8>,
+        pub resp_buf: Vec<u8>,
     }
 
     #[async_trait]
     impl ProxyHttp for Gateway {
-        type CTX = ();
+        type CTX = Ctx;
 
-        fn new_ctx(&self) -> Self::CTX {}
+        fn new_ctx(&self) -> Self::CTX {
+            Ctx {
+                req_buf: Vec::new(),
+                resp_buf: Vec::new(),
+            }
+        }
 
         async fn upstream_peer(
             &self,
@@ -29,6 +46,55 @@ pub mod gateway_app {
             )))
         }
 
+        // Control endpoint: dump collected turn records as JSON.
+        async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
+            if session.req_header().uri.path() == "/__atg/records" {
+                let records = self.store.snapshot();
+                let body = serde_json::to_vec(&records).unwrap_or_default();
+                let mut resp = ResponseHeader::build(200, None)?;
+                resp.insert_header("content-type", "application/json")?;
+                resp.insert_header("content-length", body.len().to_string())?;
+                session.write_response_header(Box::new(resp), false).await?;
+                session.write_response_body(Some(Bytes::from(body)), true).await?;
+                return Ok(true);
+            }
+            Ok(false)
+        }
+
+        async fn request_body_filter(
+            &self,
+            _session: &mut Session,
+            body: &mut Option<Bytes>,
+            _end: bool,
+            ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            if let Some(b) = body {
+                ctx.req_buf.extend_from_slice(b);
+            }
+            Ok(())
+        }
+
+        fn response_body_filter(
+            &self,
+            _session: &mut Session,
+            body: &mut Option<Bytes>,
+            _end: bool,
+            ctx: &mut Self::CTX,
+        ) -> Result<Option<std::time::Duration>> {
+            if let Some(b) = body {
+                ctx.resp_buf.extend_from_slice(b);
+            }
+            Ok(None)
+        }
+
+        async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
+            let path = session.req_header().uri.path();
+            if let Some(protocol) = unpack::detect_protocol(path) {
+                if let Some(record) = unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf) {
+                    self.store.push(record);
+                }
+            }
+        }
     }
 
     /// Start the gateway on `listen`, forwarding to `upstream`. Blocks.
@@ -37,6 +103,7 @@ pub mod gateway_app {
         server.bootstrap();
         let gateway = Gateway {
             upstream: upstream.to_string(),
+            store: TraceStore::new(),
         };
         let mut http_proxy = http_proxy(&server.configuration, gateway);
         let mut opts = pingora::apps::HttpServerOptions::default();
