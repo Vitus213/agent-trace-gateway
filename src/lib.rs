@@ -12,6 +12,7 @@ pub mod gateway_app {
 
     use crate::trace::store::TraceStore;
     use crate::trace::unpack;
+    use crate::trace::session;
 
     pub struct Gateway {
         pub upstream: String,
@@ -126,20 +127,33 @@ pub mod gateway_app {
             let Some(protocol) = unpack::detect_protocol(path) else {
                 return;
             };
+            let header_get = |name: &str| -> Option<String> {
+                session
+                    .req_header()
+                    .headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+            };
+            let session_id =
+                session::extract_session_id(protocol, &ctx.req_buf, &header_get).unwrap_or_default();
             if unpack::looks_like_sse(&ctx.resp_content_type) {
-                // Streaming turn: reassemble deltas into the final output.
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
-                let user_input = unpack::extract_user_input(protocol, &ctx.req_buf)
-                    .unwrap_or_default();
+                let user_input =
+                    unpack::extract_user_input(protocol, &ctx.req_buf).unwrap_or_default();
                 self.store.push(crate::trace::store::TurnRecord {
                     protocol: protocol.to_string(),
+                    session_id,
                     user_input,
                     final_output,
                     ..Default::default()
                 });
                 return;
             }
-            if let Some(record) = unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf) {
+            if let Some(mut record) =
+                unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf)
+            {
+                record.session_id = session_id;
                 self.store.push(record);
             }
         }

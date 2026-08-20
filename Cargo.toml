@@ -21,6 +21,7 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 tokio-stream = "0.1"
+parking_lot = "0.12.5"
 
 [lib]
 name = "agent_trace_gateway"

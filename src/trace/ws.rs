@@ -72,6 +72,7 @@ impl WsFrameParser {
 #[derive(Default)]
 pub struct WsTurnState {
     pub input: Option<String>,
+    pub session_id: String,
     pub output: String,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -81,13 +82,18 @@ impl WsTurnState {
         self.input.is_some()
     }
 
-    /// Client frames: a response.create frame starts a new turn.
+    /// Client frames: a response.create frame starts a new turn; the session id
+    /// is extracted from the frame's client_metadata at that moment.
     pub fn apply_client_frame(&mut self, payload: &[u8]) {
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) else {
             return;
         };
         if v["type"] == "response.create" {
             self.input = Some(String::from_utf8_lossy(payload).to_string());
+            self.session_id = v["client_metadata"]["session_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             self.output.clear();
             self.tool_calls.clear();
         }
@@ -120,6 +126,7 @@ impl WsTurnState {
     pub fn take_record(&mut self) -> TurnRecord {
         TurnRecord {
             protocol: "openai_responses_ws".to_string(),
+            session_id: std::mem::take(&mut self.session_id),
             user_input: self.input.take().unwrap_or_default(),
             final_output: std::mem::take(&mut self.output),
             tool_calls: std::mem::take(&mut self.tool_calls),

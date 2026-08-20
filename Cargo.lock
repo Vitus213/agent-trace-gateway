@@ -29,6 +29,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "parking_lot",
  "pingora",
  "serde",
  "serde_json",
