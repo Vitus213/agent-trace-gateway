@@ -22,6 +22,9 @@ pub mod gateway_app {
         pub req_buf: Vec<u8>,
         pub resp_buf: Vec<u8>,
         pub resp_content_type: String,
+        pub ws_client_parser: crate::trace::ws::WsFrameParser,
+        pub ws_server_parser: crate::trace::ws::WsFrameParser,
+        pub ws_turn: crate::trace::ws::WsTurnState,
     }
 
     #[async_trait]
@@ -33,6 +36,9 @@ pub mod gateway_app {
                 req_buf: Vec::new(),
                 resp_buf: Vec::new(),
                 resp_content_type: String::new(),
+                ws_client_parser: crate::trace::ws::WsFrameParser::new(true),
+                ws_server_parser: crate::trace::ws::WsFrameParser::new(false),
+                ws_turn: crate::trace::ws::WsTurnState::default(),
             }
         }
 
@@ -65,12 +71,18 @@ pub mod gateway_app {
 
         async fn request_body_filter(
             &self,
-            _session: &mut Session,
+            session: &mut Session,
             body: &mut Option<Bytes>,
             _end: bool,
             ctx: &mut Self::CTX,
         ) -> Result<()> {
-            if let Some(b) = body {
+            if session.was_upgraded() {
+                if let Some(b) = body {
+                    for payload in ctx.ws_client_parser.push(b) {
+                        ctx.ws_turn.apply_client_frame(&payload);
+                    }
+                }
+            } else if let Some(b) = body {
                 ctx.req_buf.extend_from_slice(b);
             }
             Ok(())
@@ -90,12 +102,20 @@ pub mod gateway_app {
 
         fn response_body_filter(
             &self,
-            _session: &mut Session,
+            session: &mut Session,
             body: &mut Option<Bytes>,
             _end: bool,
             ctx: &mut Self::CTX,
         ) -> Result<Option<std::time::Duration>> {
-            if let Some(b) = body {
+            if session.was_upgraded() {
+                if let Some(b) = body {
+                    for payload in ctx.ws_server_parser.push(b) {
+                        if let Some(record) = ctx.ws_turn.apply_server_frame(&payload) {
+                            self.store.push(record);
+                        }
+                    }
+                }
+            } else if let Some(b) = body {
                 ctx.resp_buf.extend_from_slice(b);
             }
             Ok(None)
