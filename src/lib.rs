@@ -19,6 +19,14 @@ pub mod gateway_app {
         pub store: TraceStore,
         pub stitcher: crate::trace::prefix::PrefixStitcher,
         pub cap: crate::trace::capture::CaptureCap,
+        pub exporter: crate::trace::export::Exporter,
+    }
+
+    impl Gateway {
+        fn push_record(&self, record: crate::trace::store::TurnRecord) {
+            self.store.push(record.clone());
+            self.exporter.submit(&record);
+        }
     }
 
     pub struct Ctx {
@@ -114,7 +122,7 @@ pub mod gateway_app {
                 if let Some(b) = body {
                     for payload in ctx.ws_server_parser.push(b) {
                         if let Some(record) = ctx.ws_turn.apply_server_frame(&payload) {
-                            self.store.push(record);
+                            self.push_record(record);
                         }
                     }
                 }
@@ -154,7 +162,7 @@ pub mod gateway_app {
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
                 let user_input =
                     unpack::extract_user_input(protocol, &ctx.req_buf).unwrap_or_default();
-                self.store.push(crate::trace::store::TurnRecord {
+                self.push_record(crate::trace::store::TurnRecord {
                     protocol: protocol.to_string(),
                     session_id,
                     user_input,
@@ -173,7 +181,7 @@ pub mod gateway_app {
                 record.breakpoint = breakpoint;
                 record.raw_request = raw_request;
                 record.raw_response = raw_response;
-                self.store.push(record);
+                self.push_record(record);
             }
         }
     }
@@ -187,6 +195,7 @@ pub mod gateway_app {
             store: TraceStore::new(),
             stitcher: crate::trace::prefix::PrefixStitcher::new(),
             cap: crate::trace::capture::CaptureCap::new(),
+            exporter: crate::trace::export::Exporter::start(std::env::var("ATG_OTLP_ENDPOINT").ok()),
         };
         let mut http_proxy = http_proxy(&server.configuration, gateway);
         let mut opts = pingora::apps::HttpServerOptions::default();

@@ -23,6 +23,7 @@ http-body-util = "0.1"
 tokio-stream = "0.1"
 parking_lot = "0.12.5"
 hex = "0.4.3"
+reqwest = "0.13.4"
 
 [lib]
 name = "agent_trace_gateway"
