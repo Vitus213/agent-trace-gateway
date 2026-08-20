@@ -130,6 +130,7 @@ impl WsTurnState {
             user_input: self.input.take().unwrap_or_default(),
             final_output: std::mem::take(&mut self.output),
             tool_calls: std::mem::take(&mut self.tool_calls),
+            breakpoint: false,
         }
     }
 }

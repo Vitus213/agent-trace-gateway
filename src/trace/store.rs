@@ -11,6 +11,8 @@ pub struct TurnRecord {
     pub final_output: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub breakpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

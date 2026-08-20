@@ -17,6 +17,7 @@ pub mod gateway_app {
     pub struct Gateway {
         pub upstream: String,
         pub store: TraceStore,
+        pub stitcher: crate::trace::prefix::PrefixStitcher,
     }
 
     pub struct Ctx {
@@ -135,8 +136,17 @@ pub mod gateway_app {
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string)
             };
-            let session_id =
+            let mut session_id =
                 session::extract_session_id(protocol, &ctx.req_buf, &header_get).unwrap_or_default();
+            let mut breakpoint = false;
+            if session_id.is_empty() {
+                if let Some(messages) = unpack::extract_messages(&ctx.req_buf) {
+                    let scope = header_get("authorization").unwrap_or_default();
+                    let (synthetic, is_bp) = self.stitcher.assign(&scope, &messages);
+                    session_id = synthetic;
+                    breakpoint = is_bp;
+                }
+            }
             if unpack::looks_like_sse(&ctx.resp_content_type) {
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
                 let user_input =
@@ -146,6 +156,7 @@ pub mod gateway_app {
                     session_id,
                     user_input,
                     final_output,
+                    breakpoint,
                     ..Default::default()
                 });
                 return;
@@ -154,6 +165,7 @@ pub mod gateway_app {
                 unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf)
             {
                 record.session_id = session_id;
+                record.breakpoint = breakpoint;
                 self.store.push(record);
             }
         }
@@ -166,6 +178,7 @@ pub mod gateway_app {
         let gateway = Gateway {
             upstream: upstream.to_string(),
             store: TraceStore::new(),
+            stitcher: crate::trace::prefix::PrefixStitcher::new(),
         };
         let mut http_proxy = http_proxy(&server.configuration, gateway);
         let mut opts = pingora::apps::HttpServerOptions::default();

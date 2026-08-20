@@ -164,6 +164,16 @@ pub fn extract_user_input(protocol: &str, request_body: &[u8]) -> Option<String>
     }
 }
 
+/// Extract the full messages array from a chat/anthropic request body for
+/// prefix stitching. Returns None for non-message protocols.
+pub fn extract_messages(request_body: &[u8]) -> Option<Vec<serde_json::Value>> {
+    let req: serde_json::Value = serde_json::from_slice(request_body).ok()?;
+    req["messages"]
+        .as_array()
+        .map(|arr| arr.to_vec())
+        .filter(|v| !v.is_empty())
+}
+
 /// Flatten OpenAI/Anthropic content fields: plain string or block arrays.
 fn content_text(content: &serde_json::Value) -> Option<String> {
     if let Some(s) = content.as_str() {

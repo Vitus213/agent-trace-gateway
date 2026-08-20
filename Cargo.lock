@@ -25,6 +25,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-util",
+ "hex",
  "http",
  "http-body-util",
  "hyper",
