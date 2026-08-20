@@ -8,14 +8,28 @@
 //! - same head but chain diverges/shortens -> new segment + breakpoint mark
 //! - new head                              -> new session, no mark (a different
 //!   conversation cannot be told from a rewrite, so nothing is asserted)
+//!
+//! Bounds: LRU capacity (env ATG_STITCH_CAPACITY, default 100_000) + TTL
+//! (env ATG_STITCH_TTL_MS, default 24h). Over/evicted requests degrade to
+//! independent single-turn records; no errors are produced.
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const FINGERPRINT_KIND: &str = "pfx";
+const DEFAULT_CAPACITY: usize = 100_000;
+const DEFAULT_TTL: Duration = Duration::from_secs(24 * 3600);
 
 pub struct PrefixStitcher {
     states: Mutex<HashMap<(String, String), ChainState>>,
+    capacity: usize,
+    ttl: Duration,
+    next_nonce: AtomicU64,
+    /// Per-instance salt: keeps the synthetic id namespace scoped to this
+    /// process so a restarted gateway never silently continues an old chain.
+    salt: [u8; 8],
 }
 
 struct ChainState {
@@ -23,6 +37,7 @@ struct ChainState {
     chain: Vec<[u8; 32]>,
     /// Synthetic session id of the current segment.
     session_id: String,
+    last_used: Instant,
 }
 
 impl Default for PrefixStitcher {
@@ -33,8 +48,21 @@ impl Default for PrefixStitcher {
 
 impl PrefixStitcher {
     pub fn new() -> Self {
+        let capacity = std::env::var("ATG_STITCH_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CAPACITY);
+        let ttl = std::env::var("ATG_STITCH_TTL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(DEFAULT_TTL);
         Self {
             states: Mutex::new(HashMap::new()),
+            capacity,
+            ttl,
+            next_nonce: AtomicU64::new(0),
+            salt: instance_salt(),
         }
     }
 
@@ -44,29 +72,72 @@ impl PrefixStitcher {
         let head = head_key(messages);
         let fps: Vec<[u8; 32]> = messages.iter().map(message_fingerprint).collect();
         let mut states = self.states.lock();
-        let entry = states.entry((scope.to_string(), head)).or_insert_with(|| {
-            // First sighting of this head: open a fresh chain.
-            ChainState {
-                session_id: new_session_id(&fps_concat(&fps)),
-                chain: fps.clone(),
+        let now = Instant::now();
+        // TTL purge.
+        let ttl = self.ttl;
+        states.retain(|_, st| now.duration_since(st.last_used) < ttl);
+        let key = (scope.to_string(), head);
+        if let Some(entry) = states.get_mut(&key) {
+            entry.last_used = now;
+            if fps.len() >= entry.chain.len() && fps[..entry.chain.len()] == entry.chain[..] {
+                // Strict prefix extension.
+                entry.chain = fps;
+                return (entry.session_id.clone(), false);
             }
-        });
-        if entry.chain.is_empty() {
-            entry.chain = fps.clone();
-            entry.session_id = new_session_id(&fps_concat(&fps));
-            return (entry.session_id.clone(), false);
-        }
-        if fps.len() >= entry.chain.len() && fps[..entry.chain.len()] == entry.chain[..] {
-            // Strict prefix extension.
+            // Same head, divergent or shortened history: compaction breakpoint.
+            let new_session = self.new_session_id(&fps_concat(&fps));
             entry.chain = fps;
-            return (entry.session_id.clone(), false);
+            entry.session_id = new_session.clone();
+            return (new_session, true);
         }
-        // Same head, divergent or shortened history: compaction breakpoint.
-        let new_session = new_session_id(&fps_concat(&fps));
-        entry.chain = fps;
-        entry.session_id = new_session.clone();
-        (new_session, true)
+        // New chain: enforce LRU capacity before inserting.
+        if states.len() >= self.capacity {
+            let lru_key = states
+                .iter()
+                .min_by_key(|(_, st)| st.last_used)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = lru_key {
+                states.remove(&k);
+            }
+        }
+        let session_id = self.new_session_id(&fps_concat(&fps));
+        states.insert(
+            key,
+            ChainState {
+                chain: fps,
+                session_id: session_id.clone(),
+                last_used: now,
+            },
+        );
+        (session_id, false)
     }
+
+    /// Session ids carry a nonce so a reopened chain (after eviction/TTL)
+    /// never silently merges with its former trajectory.
+    fn new_session_id(&self, seed: &[u8]) -> String {
+        let nonce = self.next_nonce.fetch_add(1, Ordering::Relaxed);
+        let mut h = Sha256::new();
+        h.update(FINGERPRINT_KIND.as_bytes());
+        h.update(self.salt);
+        h.update(seed);
+        h.update(nonce.to_be_bytes());
+        let hexed = hex::encode(h.finalize());
+        format!("{FINGERPRINT_KIND}:{}", &hexed[..32])
+    }
+}
+
+/// Process-scoped salt (not cryptographic): pid, clock and a static address
+/// together vary per process instance.
+fn instance_salt() -> [u8; 8] {
+    static ANCHOR: u8 = 0;
+    let mut h = Sha256::new();
+    h.update(std::process::id().to_be_bytes());
+    h.update(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().to_be_bytes())
+        .unwrap_or_default());
+    h.update((&ANCHOR as *const u8 as usize).to_be_bytes());
+    h.finalize()[..8].try_into().unwrap()
 }
 
 /// Head key: fingerprints of the first two messages (system + first user).
@@ -90,12 +161,4 @@ fn fps_concat(fps: &[[u8; 32]]) -> Vec<u8> {
         out.extend_from_slice(f);
     }
     out
-}
-
-fn new_session_id(seed: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(FINGERPRINT_KIND.as_bytes());
-    h.update(seed);
-    let hexed = hex::encode(h.finalize());
-    format!("{FINGERPRINT_KIND}:{}", &hexed[..32])
 }
