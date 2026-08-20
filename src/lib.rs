@@ -7,7 +7,7 @@ pub mod gateway_app {
     use bytes::Bytes;
     use pingora::http::ResponseHeader;
     use pingora::prelude::*;
-    use pingora::proxy::{http_proxy_service, ProxyHttp, Session};
+    use pingora::proxy::{http_proxy, ProxyHttp, Session};
     use pingora::upstreams::peer::HttpPeer;
 
     use crate::trace::store::TraceStore;
