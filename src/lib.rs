@@ -21,6 +21,7 @@ pub mod gateway_app {
     pub struct Ctx {
         pub req_buf: Vec<u8>,
         pub resp_buf: Vec<u8>,
+        pub resp_content_type: String,
     }
 
     #[async_trait]
@@ -31,6 +32,7 @@ pub mod gateway_app {
             Ctx {
                 req_buf: Vec::new(),
                 resp_buf: Vec::new(),
+                resp_content_type: String::new(),
             }
         }
 
@@ -74,6 +76,18 @@ pub mod gateway_app {
             Ok(())
         }
 
+        async fn upstream_response_filter(
+            &self,
+            _session: &mut Session,
+            resp: &mut pingora::http::ResponseHeader,
+            ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            if let Some(v) = resp.headers.get(http::header::CONTENT_TYPE) {
+                ctx.resp_content_type = v.to_str().unwrap_or("").to_string();
+            }
+            Ok(())
+        }
+
         fn response_body_filter(
             &self,
             _session: &mut Session,
@@ -89,10 +103,24 @@ pub mod gateway_app {
 
         async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
             let path = session.req_header().uri.path();
-            if let Some(protocol) = unpack::detect_protocol(path) {
-                if let Some(record) = unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf) {
-                    self.store.push(record);
-                }
+            let Some(protocol) = unpack::detect_protocol(path) else {
+                return;
+            };
+            if unpack::looks_like_sse(&ctx.resp_content_type) {
+                // Streaming turn: reassemble deltas into the final output.
+                let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
+                let user_input = unpack::extract_user_input(protocol, &ctx.req_buf)
+                    .unwrap_or_default();
+                self.store.push(crate::trace::store::TurnRecord {
+                    protocol: protocol.to_string(),
+                    user_input,
+                    final_output,
+                    ..Default::default()
+                });
+                return;
+            }
+            if let Some(record) = unpack::unpack_nonstreaming(protocol, &ctx.req_buf, &ctx.resp_buf) {
+                self.store.push(record);
             }
         }
     }

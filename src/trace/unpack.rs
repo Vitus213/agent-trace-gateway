@@ -15,6 +15,59 @@ pub fn detect_protocol(path: &str) -> Option<&'static str> {
     }
 }
 
+/// Detect whether a captured response is an SSE stream (by content type).
+pub fn looks_like_sse(content_type: &str) -> bool {
+    content_type.contains("text/event-stream")
+}
+
+/// Reassemble the final output text of a streaming response from captured SSE
+/// frames. Concatenates output_text deltas in arrival order.
+/// Supports OpenAI Responses deltas, OpenAI chat deltas and Anthropic
+/// content_block_delta.
+pub fn reassemble_sse_output(protocol: &str, response_body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(response_body);
+    let mut out = String::new();
+    for frame in text.split("\n\n") {
+        let mut data = String::new();
+        for line in frame.lines() {
+            if let Some(rest) = line.strip_prefix("data:") {
+                data.push_str(rest.trim_start());
+            }
+        }
+        if data.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            continue;
+        };
+        match protocol {
+            "openai_responses" => {
+                if v["type"] == "response.output_text.delta" {
+                    if let Some(d) = v["delta"].as_str() {
+                        out.push_str(d);
+                    }
+                }
+            }
+            "anthropic_messages" => {
+                if v["type"] == "content_block_delta" {
+                    if let Some(d) = v["delta"]["text"].as_str() {
+                        out.push_str(d);
+                    }
+                }
+            }
+            "openai_chat" => {
+                if let Some(choices) = v["choices"].as_array() {
+                    if let Some(d) = choices.first().and_then(|c| c["delta"]["content"].as_str()) {
+                        out.push_str(d);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Extract user input + final output from one non-streaming request/response
 /// pair. Returns None when the protocol is unknown or bodies are not JSON.
 pub fn unpack_nonstreaming(protocol: &str, request_body: &[u8], response_body: &[u8]) -> Option<TurnRecord> {
@@ -91,6 +144,22 @@ pub fn unpack_nonstreaming(protocol: &str, request_body: &[u8], response_body: &
                 ..Default::default()
             })
         }
+        _ => None,
+    }
+}
+
+/// Extract only the user input from a request body (streaming path; response
+/// reassembly is handled separately).
+pub fn extract_user_input(protocol: &str, request_body: &[u8]) -> Option<String> {
+    let req: serde_json::Value = serde_json::from_slice(request_body).ok()?;
+    match protocol {
+        "openai_chat" | "anthropic_messages" => req["messages"]
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| content_text(&m["content"])),
+        "openai_responses" => req["input"].as_str().map(str::to_string),
         _ => None,
     }
 }
