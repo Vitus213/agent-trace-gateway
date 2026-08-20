@@ -77,6 +77,21 @@ pub mod gateway_app {
                 session.write_response_body(Some(Bytes::from(body)), true).await?;
                 return Ok(true);
             }
+            if session.req_header().uri.path() == "/__atg/health" {
+                let (exported, failed, dropped) = self.exporter.health.snapshot();
+                let body = serde_json::json!({
+                    "exported": exported,
+                    "failed": failed,
+                    "dropped": dropped
+                })
+                .to_string();
+                let mut resp = ResponseHeader::build(200, None)?;
+                resp.insert_header("content-type", "application/json")?;
+                resp.insert_header("content-length", body.len().to_string())?;
+                session.write_response_header(Box::new(resp), false).await?;
+                session.write_response_body(Some(Bytes::from(body)), true).await?;
+                return Ok(true);
+            }
             Ok(false)
         }
 
