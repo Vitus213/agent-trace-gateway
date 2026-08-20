@@ -106,6 +106,9 @@ async fn handle(mut req: Request<Incoming>) -> Result<Response<BoxedBody>, Infal
                     let events = [
                         "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"echo-stream:\"}\n\n",
                         "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"part2\"}\n\n",
+                        "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_sse_1\",\"name\":\"read_file\",\"arguments\":\"\"}}\n\n",
+                        "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"/tmp/x\\\"}\"}\n\n",
+                        "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_sse_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/tmp/x\\\"}\"}}\n\n",
                         "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
                     ];
                     for ev in events {

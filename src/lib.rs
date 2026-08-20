@@ -29,6 +29,13 @@ pub mod gateway_app {
         }
     }
 
+    fn now_ns() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
+
     pub struct Ctx {
         pub req_buf: Vec<u8>,
         pub resp_buf: Vec<u8>,
@@ -36,6 +43,10 @@ pub mod gateway_app {
         pub ws_client_parser: crate::trace::ws::WsFrameParser,
         pub ws_server_parser: crate::trace::ws::WsFrameParser,
         pub ws_turn: crate::trace::ws::WsTurnState,
+        /// Turn timing (unix nanoseconds). start set at request start,
+        /// end set when the record is finalized.
+        pub start_ns: u64,
+        pub end_ns: u64,
     }
 
     #[async_trait]
@@ -50,6 +61,8 @@ pub mod gateway_app {
                 ws_client_parser: crate::trace::ws::WsFrameParser::new(true),
                 ws_server_parser: crate::trace::ws::WsFrameParser::new(false),
                 ws_turn: crate::trace::ws::WsTurnState::default(),
+                start_ns: now_ns(),
+                end_ns: 0,
             }
         }
 
@@ -136,7 +149,10 @@ pub mod gateway_app {
             if session.was_upgraded() {
                 if let Some(b) = body {
                     for payload in ctx.ws_server_parser.push(b) {
-                        if let Some(record) = ctx.ws_turn.apply_server_frame(&payload) {
+                        if let Some(mut record) = ctx.ws_turn.apply_server_frame(&payload) {
+                            ctx.end_ns = now_ns();
+                            record.start_ns = ctx.start_ns;
+                            record.end_ns = ctx.end_ns;
                             self.push_record(record);
                         }
                     }
@@ -177,6 +193,7 @@ pub mod gateway_app {
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
                 let user_input =
                     unpack::extract_user_input(protocol, &ctx.req_buf).unwrap_or_default();
+                ctx.end_ns = now_ns();
                 self.push_record(crate::trace::store::TurnRecord {
                     protocol: protocol.to_string(),
                     session_id,
@@ -184,8 +201,10 @@ pub mod gateway_app {
                     final_output,
                     raw_request,
                     raw_response,
+                    tool_calls: unpack::extract_sse_tool_calls(protocol, &ctx.resp_buf),
                     breakpoint,
-                    ..Default::default()
+                    start_ns: ctx.start_ns,
+                    end_ns: ctx.end_ns,
                 });
                 return;
             }
@@ -196,6 +215,9 @@ pub mod gateway_app {
                 record.breakpoint = breakpoint;
                 record.raw_request = raw_request;
                 record.raw_response = raw_response;
+                ctx.end_ns = now_ns();
+                record.start_ns = ctx.start_ns;
+                record.end_ns = ctx.end_ns;
                 self.push_record(record);
             }
         }

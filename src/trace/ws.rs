@@ -142,6 +142,9 @@ impl WsTurnState {
             raw_response: std::mem::take(&mut self.raw_response),
             tool_calls: std::mem::take(&mut self.tool_calls),
             breakpoint: false,
+            // Timing is filled by the gateway (Ctx) after take_record.
+            start_ns: 0,
+            end_ns: 0,
         }
     }
 }

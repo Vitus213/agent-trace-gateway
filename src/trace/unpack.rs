@@ -68,6 +68,39 @@ pub fn reassemble_sse_output(protocol: &str, response_body: &[u8]) -> String {
     out
 }
 
+/// Extract complete tool calls from a streaming response. Tool calls are read
+/// from `response.output_item.done` events, which carry the fully assembled
+/// function_call item (name + complete arguments), avoiding the need to
+/// reassemble argument deltas.
+pub fn extract_sse_tool_calls(protocol: &str, response_body: &[u8]) -> Vec<crate::trace::store::ToolCall> {
+    let mut out = Vec::new();
+    if protocol != "openai_responses" {
+        return out;
+    }
+    let text = String::from_utf8_lossy(response_body);
+    for frame in text.split("\n\n") {
+        let mut data = String::new();
+        for line in frame.lines() {
+            if let Some(rest) = line.strip_prefix("data:") {
+                data.push_str(rest.trim_start());
+            }
+        }
+        if data.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            continue;
+        };
+        if v["type"] == "response.output_item.done" && v["item"]["type"] == "function_call" {
+            out.push(crate::trace::store::ToolCall {
+                name: v["item"]["name"].as_str().unwrap_or("").to_string(),
+                arguments: v["item"]["arguments"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    out
+}
+
 /// Extract user input + final output from one non-streaming request/response
 /// pair. Returns None when the protocol is unknown or bodies are not JSON.
 pub fn unpack_nonstreaming(protocol: &str, request_body: &[u8], response_body: &[u8]) -> Option<TurnRecord> {

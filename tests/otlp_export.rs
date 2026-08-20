@@ -74,6 +74,19 @@ async fn otlp_export() {
     assert_eq!(resp.status(), StatusCode::OK);
     let _ = resp.collect().await.unwrap();
 
+    // Second turn: streaming with a tool call, so the exported span must
+    // carry the full tool_calls array.
+    let req = Request::post(format!("http://127.0.0.1:{gw}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-codex-turn-metadata", "{\"session_id\":\"otlp-session-1\",\"turn_id\":\"otlp-turn-2\"}")
+        .body(Full::new(Bytes::from(
+            r#"{"model":"m","stream":true,"input":"otlp-tool-turn","client_metadata":{"session_id":"otlp-session-1"}}"#,
+        )))
+        .unwrap();
+    let resp = client().request(req).await.expect("stream request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.collect().await.unwrap();
+
     // Wait for the export flush.
     let mut exported = Vec::new();
     for _ in 0..50 {
@@ -95,7 +108,7 @@ async fn otlp_export() {
         .and_then(|ss| ss.first())
         .and_then(|s| s["spans"].as_array())
         .unwrap_or_else(|| panic!("OTLP spans missing: {payload}"));
-    assert_eq!(spans.len(), 1, "one turn span expected: {spans:?}");
+    assert_eq!(spans.len(), 2, "two turn spans expected: {spans:?}");
     let span = &spans[0];
     // Session id present as an attribute; turn content carried verbatim.
     let attrs = span["attributes"].as_array().expect("span attributes");
@@ -118,7 +131,45 @@ async fn otlp_export() {
         "verbatim request must be exported: {attrs:?}"
     );
 
+    // Timestamps must be real (non-zero nanoseconds), not placeholders.
+    for s in spans {
+        let start = s["startTimeUnixNano"].as_str().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+        let end = s["endTimeUnixNano"].as_str().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+        assert!(start > 0, "startTimeUnixNano must be a real timestamp: {s}");
+        assert!(end >= start, "endTimeUnixNano must be >= start: {s}");
+    }
+
+    // The streaming turn must export its tool_calls (name + parseable args).
+    let tool_span = spans
+        .iter()
+        .find(|s| {
+            s["attributes"]
+                .as_array()
+                .map(|a| {
+                    a.iter().any(|x| {
+                        x["key"] == "protocol"
+                            && x["value"]["stringValue"] == "openai_responses"
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("openai_responses span missing: {spans:?}"));
+    let tool_attrs = tool_span["attributes"].as_array().expect("tool span attributes");
+    let tool_calls_json = tool_attrs
+        .iter()
+        .find(|a| a["key"] == "tool_calls")
+        .and_then(|a| a["value"]["stringValue"].as_str())
+        .unwrap_or_else(|| panic!("tool_calls attribute missing on streaming span: {tool_attrs:?}"));
+    let tool_calls: Vec<serde_json::Value> =
+        serde_json::from_str(tool_calls_json).expect("tool_calls must be JSON");
+    assert_eq!(tool_calls.len(), 1, "one streamed tool call expected: {tool_calls:?}");
+    assert_eq!(tool_calls[0]["name"], "read_file");
+    let args: serde_json::Value =
+        serde_json::from_str(tool_calls[0]["arguments"].as_str().unwrap())
+            .expect("exported tool arguments must be complete and parseable");
+    assert_eq!(args["path"], "/tmp/x");
+
     // The record store still holds the record (export does not mutate it).
     let recs = records(gw).await;
-    assert_eq!(recs.len(), 1);
+    assert_eq!(recs.len(), 2, "both turns must remain in the record store");
 }

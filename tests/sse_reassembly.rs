@@ -63,4 +63,14 @@ async fn sse_reassembly() {
         rec["final_output"], "echo-stream:part2",
         "SSE deltas must reassemble to the concatenated text: {rec}"
     );
+    // Tool calls streamed via output_item events must be captured with
+    // complete name and parseable arguments.
+    let tools = rec["tool_calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tool_calls missing on streaming record: {rec}"));
+    assert_eq!(tools.len(), 1, "one streamed tool call expected: {tools:?}");
+    assert_eq!(tools[0]["name"], "read_file", "tool name: {tools:?}");
+    let args: serde_json::Value = serde_json::from_str(tools[0]["arguments"].as_str().unwrap())
+        .expect("tool arguments must be complete and parseable");
+    assert_eq!(args["path"], "/tmp/x", "tool arguments: {tools:?}");
 }

@@ -123,22 +123,27 @@ fn build_otlp_json(batch: &[TurnRecord]) -> String {
     let spans: Vec<serde_json::Value> = batch
         .iter()
         .map(|r| {
+            let mut attributes = vec![
+                kv("session.id", &r.session_id),
+                kv("protocol", &r.protocol),
+                kv("user_input", &r.user_input),
+                kv("final_output", &r.final_output),
+                kv("raw_request", &r.raw_request),
+                kv("raw_response", &r.raw_response),
+                kv("breakpoint", if r.breakpoint { "true" } else { "false" }),
+            ];
+            if !r.tool_calls.is_empty() {
+                let tool_calls_json = serde_json::to_string(&r.tool_calls).unwrap_or_default();
+                attributes.push(kv("tool_calls", &tool_calls_json));
+            }
             serde_json::json!({
                 "traceId": trace_id_for(&r.session_id),
                 "spanId": span_id_for(&r.session_id, &r.user_input, &r.raw_request),
                 "name": "agent.turn",
                 "kind": 3,
-                "startTimeUnixNano": "0",
-                "endTimeUnixNano": "0",
-                "attributes": [
-                    kv("session.id", &r.session_id),
-                    kv("protocol", &r.protocol),
-                    kv("user_input", &r.user_input),
-                    kv("final_output", &r.final_output),
-                    kv("raw_request", &r.raw_request),
-                    kv("raw_response", &r.raw_response),
-                    kv("breakpoint", if r.breakpoint { "true" } else { "false" }),
-                ]
+                "startTimeUnixNano": r.start_ns.to_string(),
+                "endTimeUnixNano": r.end_ns.to_string(),
+                "attributes": attributes
             })
         })
         .collect();

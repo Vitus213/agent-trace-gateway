@@ -20,6 +20,11 @@ pub struct TurnRecord {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub breakpoint: bool,
+    /// Turn timing in unix nanoseconds (0 = unknown).
+    #[serde(default)]
+    pub start_ns: u64,
+    #[serde(default)]
+    pub end_ns: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
