@@ -147,6 +147,8 @@ pub mod gateway_app {
                     breakpoint = is_bp;
                 }
             }
+            let raw_request = String::from_utf8_lossy(&ctx.req_buf).to_string();
+            let raw_response = String::from_utf8_lossy(&ctx.resp_buf).to_string();
             if unpack::looks_like_sse(&ctx.resp_content_type) {
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
                 let user_input =
@@ -156,6 +158,8 @@ pub mod gateway_app {
                     session_id,
                     user_input,
                     final_output,
+                    raw_request,
+                    raw_response,
                     breakpoint,
                     ..Default::default()
                 });
@@ -166,6 +170,8 @@ pub mod gateway_app {
             {
                 record.session_id = session_id;
                 record.breakpoint = breakpoint;
+                record.raw_request = raw_request;
+                record.raw_response = raw_response;
                 self.store.push(record);
             }
         }

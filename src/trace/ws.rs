@@ -75,6 +75,10 @@ pub struct WsTurnState {
     pub session_id: String,
     pub output: String,
     pub tool_calls: Vec<ToolCall>,
+    /// Verbatim client frame payload of the turn (response.create).
+    pub raw_request: String,
+    /// Verbatim server frame payloads accumulated for the turn.
+    pub raw_response: String,
 }
 
 impl WsTurnState {
@@ -89,7 +93,10 @@ impl WsTurnState {
             return;
         };
         if v["type"] == "response.create" {
-            self.input = Some(String::from_utf8_lossy(payload).to_string());
+            let text = String::from_utf8_lossy(payload).to_string();
+            self.input = Some(text.clone());
+            self.raw_request = text;
+            self.raw_response.clear();
             self.session_id = v["client_metadata"]["session_id"]
                 .as_str()
                 .unwrap_or("")
@@ -102,6 +109,8 @@ impl WsTurnState {
     /// Server frames: accumulate output/tool calls; response.completed ends the
     /// turn and returns its record.
     pub fn apply_server_frame(&mut self, payload: &[u8]) -> Option<TurnRecord> {
+        self.raw_response.push_str(&String::from_utf8_lossy(payload));
+        self.raw_response.push('\n');
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) else {
             return None;
         };
@@ -129,6 +138,8 @@ impl WsTurnState {
             session_id: std::mem::take(&mut self.session_id),
             user_input: self.input.take().unwrap_or_default(),
             final_output: std::mem::take(&mut self.output),
+            raw_request: std::mem::take(&mut self.raw_request),
+            raw_response: std::mem::take(&mut self.raw_response),
             tool_calls: std::mem::take(&mut self.tool_calls),
             breakpoint: false,
         }

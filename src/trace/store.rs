@@ -9,6 +9,13 @@ pub struct TurnRecord {
     pub session_id: String,
     pub user_input: String,
     pub final_output: String,
+    /// Verbatim business content (D4 content fidelity): original request and
+    /// response bodies. Transport-layer noise (per-hop headers, TCP metadata)
+    /// is never captured here because only body bytes are accumulated.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub raw_request: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub raw_response: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
