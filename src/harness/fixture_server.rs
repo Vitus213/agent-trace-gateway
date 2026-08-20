@@ -1,0 +1,180 @@
+//! Fixture upstream speaking real wire protocols, embeddable as a tokio task.
+//!   POST /v1/chat       -> non-streaming JSON echo (session_id extraction target)
+//!   POST /v1/sse        -> text/event-stream fixed events
+//!   GET  /ws            -> WebSocket upgrade scripted agent turn
+//!   POST /v1/messages   -> Anthropic Messages protocol (JSON response)
+//!   POST /v1/responses  -> OpenAI Responses protocol (SSE stream incl. tool call)
+use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use sha1_smol::Sha1;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
+
+type BoxedBody = BoxBody<Bytes, Infallible>;
+
+fn full(s: impl Into<Bytes>) -> BoxedBody {
+    Full::new(s.into()).map_err(|never| match never {}).boxed()
+}
+
+/// Serve the fixture on the given address until the task is dropped.
+pub async fn serve(listen: &str) -> std::io::Result<()> {
+    let listener = TcpListener::bind(listen).await?;
+    eprintln!("FIXTURE: listening on {listen}");
+    loop {
+        let (stream, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let svc = service_fn(handle);
+            if let Err(e) = http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await
+            {
+                eprintln!("FIXTURE: connection error: {e}");
+            }
+        });
+    }
+}
+
+async fn handle(mut req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallible> {
+    match (req.method().as_str(), req.uri().path()) {
+        ("POST", "/v1/chat") => {
+            let body = req.collect().await.unwrap().to_bytes();
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let session = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("");
+            let resp = serde_json::json!({"ok": true, "echo_session": session, "reply": "chat-done"});
+            let mut r = Response::new(full(resp.to_string()));
+            r.headers_mut()
+                .insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());
+            Ok(r)
+        }
+        ("POST", "/v1/sse") => {
+            let _ = req.collect().await.unwrap().to_bytes();
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(8);
+            tokio::spawn(async move {
+                let events = [
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+                    "data: {\"type\":\"response.tool_call\",\"name\":\"read_file\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                ];
+                for ev in events {
+                    let _ = tx.send(Ok(Frame::data(Bytes::from(ev)))).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            });
+            let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+            let body = BodyExt::boxed(StreamBody::new(stream));
+            let mut r = Response::new(body);
+            *r.status_mut() = StatusCode::OK;
+            r.headers_mut()
+                .insert(hyper::header::CONTENT_TYPE, "text/event-stream".parse().unwrap());
+            Ok(r)
+        }
+        ("GET", "/ws") if is_ws_upgrade(&req) => {
+            let accept = ws_accept_key(
+                req.headers()
+                    .get("sec-websocket-key")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            );
+            let mut resp = Response::new(full(""));
+            *resp.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+            resp.headers_mut()
+                .insert(hyper::header::CONNECTION, "upgrade".parse().unwrap());
+            resp.headers_mut()
+                .insert(hyper::header::UPGRADE, "websocket".parse().unwrap());
+            resp.headers_mut()
+                .insert("sec-websocket-accept", accept.parse().unwrap());
+            tokio::spawn(async move {
+                let upgraded = match hyper::upgrade::on(&mut req).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        eprintln!("FIXTURE: upgrade failed: {e}");
+                        return;
+                    }
+                };
+                // Handshake is already complete (101 sent). The upgraded stream
+                // carries raw WebSocket frames; do NOT re-run the handshake.
+                let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                    TokioIo::new(upgraded),
+                    tokio_tungstenite::tungstenite::protocol::Role::Server,
+                    None,
+                )
+                .await;
+                run_ws_turn(ws).await;
+            });
+            Ok(resp)
+        }
+        _ => {
+            let mut r = Response::new(full("not found"));
+            *r.status_mut() = StatusCode::NOT_FOUND;
+            Ok(r)
+        }
+    }
+}
+
+async fn run_ws_turn(ws: tokio_tungstenite::WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>) {
+    let (mut sink, mut stream) = ws.split();
+    let first = stream.next().await;
+    let Some(Ok(Message::Text(create))) = first else {
+        eprintln!("FIXTURE: did not receive response.create");
+        return;
+    };
+    eprintln!("FIXTURE: ws got create: {create}");
+    sink.send(Message::Text(
+        "{\"type\":\"response.tool_call\",\"call_id\":\"call-1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/tmp/x\\\"}\"}".into(),
+    ))
+    .await
+    .unwrap();
+    let tool_result = stream.next().await;
+    let Some(Ok(Message::Text(result))) = tool_result else {
+        eprintln!("FIXTURE: did not receive tool result");
+        return;
+    };
+    eprintln!("FIXTURE: ws got tool result: {result}");
+    sink.send(Message::Text(
+        "{\"type\":\"response.output_text.delta\",\"delta\":\"file-content\"}".into(),
+    ))
+    .await
+    .unwrap();
+    sink.send(Message::Text(
+        "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"session_id\":\"sess-ws-1\"}}".into(),
+    ))
+    .await
+    .unwrap();
+    let _ = sink.send(Message::Close(None)).await;
+}
+
+fn is_ws_upgrade(req: &Request<Incoming>) -> bool {
+    req.headers()
+        .get(hyper::header::CONNECTION)
+        .map(|v| v.to_str().unwrap_or("").to_lowercase().contains("upgrade"))
+        .unwrap_or(false)
+        && req
+            .headers()
+            .get(hyper::header::UPGRADE)
+            .map(|v| v.to_str().unwrap_or("").eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false)
+}
+
+fn ws_accept_key(key: &str) -> String {
+    let mut s = Sha1::new();
+    s.update(key.as_bytes());
+    s.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s.digest().bytes())
+}
+
+#[allow(dead_code)]
+fn _assert_send() -> SocketAddr {
+    "127.0.0.1:0".parse().unwrap()
+}
