@@ -18,6 +18,7 @@ pub mod gateway_app {
         pub upstream: String,
         pub store: TraceStore,
         pub stitcher: crate::trace::prefix::PrefixStitcher,
+        pub cap: crate::trace::capture::CaptureCap,
     }
 
     pub struct Ctx {
@@ -147,8 +148,8 @@ pub mod gateway_app {
                     breakpoint = is_bp;
                 }
             }
-            let raw_request = String::from_utf8_lossy(&ctx.req_buf).to_string();
-            let raw_response = String::from_utf8_lossy(&ctx.resp_buf).to_string();
+            let raw_request = self.cap.bound(&ctx.req_buf);
+            let raw_response = self.cap.bound(&ctx.resp_buf);
             if unpack::looks_like_sse(&ctx.resp_content_type) {
                 let final_output = unpack::reassemble_sse_output(protocol, &ctx.resp_buf);
                 let user_input =
@@ -185,6 +186,7 @@ pub mod gateway_app {
             upstream: upstream.to_string(),
             store: TraceStore::new(),
             stitcher: crate::trace::prefix::PrefixStitcher::new(),
+            cap: crate::trace::capture::CaptureCap::new(),
         };
         let mut http_proxy = http_proxy(&server.configuration, gateway);
         let mut opts = pingora::apps::HttpServerOptions::default();
