@@ -8,7 +8,7 @@ pub fn detect_protocol(path: &str) -> Option<&'static str> {
         Some("openai_chat")
     } else if path.starts_with("/v1/messages") {
         Some("anthropic_messages")
-    } else if path.starts_with("/v1/responses") {
+    } else if path.starts_with("/v1/responses") || path.starts_with("/compatible-mode/v1/responses") {
         Some("openai_responses")
     } else {
         None
@@ -153,7 +153,7 @@ pub fn unpack_nonstreaming(protocol: &str, request_body: &[u8], response_body: &
             })
         }
         "openai_responses" => {
-            let user_input = req["input"].as_str()?.to_string();
+            let user_input = responses_user_input(&req)?;
             let final_output = resp["output"]
                 .as_array()
                 .and_then(|items| {
@@ -192,9 +192,35 @@ pub fn extract_user_input(protocol: &str, request_body: &[u8]) -> Option<String>
             .rev()
             .find(|m| m["role"] == "user")
             .and_then(|m| content_text(&m["content"])),
-        "openai_responses" => req["input"].as_str().map(str::to_string),
+        "openai_responses" => responses_user_input(&req),
         _ => None,
     }
+}
+
+/// OpenAI Responses `input` is either a plain string or an array of items
+/// (messages with role + content blocks). For the array form, take the last
+/// user message's input_text blocks (real codex traffic format).
+fn responses_user_input(req: &serde_json::Value) -> Option<String> {
+    if let Some(s) = req["input"].as_str() {
+        return Some(s.to_string());
+    }
+    let items = req["input"].as_array()?;
+    let user_item = items.iter().rev().find(|i| {
+        i["type"] == "message" && i["role"] == "user"
+    })?;
+    let blocks = user_item["content"].as_array()?;
+    let mut out = Vec::new();
+    for b in blocks {
+        if b["type"] == "input_text" {
+            if let Some(t) = b["text"].as_str() {
+                out.push(t.to_string());
+            }
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out.join("\n"))
 }
 
 /// Extract the full messages array from a chat/anthropic request body for

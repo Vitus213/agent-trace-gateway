@@ -7,7 +7,7 @@ pub mod gateway_app {
     use bytes::Bytes;
     use pingora::http::ResponseHeader;
     use pingora::prelude::*;
-    use pingora::proxy::{http_proxy, ProxyHttp, Session};
+    use pingora::proxy::{http_proxy, FailToProxy, ProxyHttp, Session};
     use pingora::upstreams::peer::HttpPeer;
 
     use crate::trace::store::TraceStore;
@@ -71,11 +71,38 @@ pub mod gateway_app {
             _session: &mut Session,
             _ctx: &mut Self::CTX,
         ) -> Result<Box<HttpPeer>> {
-            Ok(Box::new(HttpPeer::new(
-                self.upstream.clone(),
-                false,
-                String::new(),
-            )))
+            let tls = self.upstream.starts_with("https://");
+            let host = self
+                .upstream
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_string();
+            // ATG_SNI overrides SNI so an upstream given as a bare IP can still
+            // complete TLS with the correct hostname.
+            let sni = std::env::var("ATG_SNI").ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| host.split(':').next().unwrap_or("").to_string());
+            Ok(Box::new(HttpPeer::new(host, tls, sni)))
+        }
+
+        // Rewrite the Host header so the real upstream routes the request
+        // correctly. Uses ATG_SNI when set, else the upstream host.
+        async fn upstream_request_filter(
+            &self,
+            _session: &mut Session,
+            upstream_request: &mut pingora::http::RequestHeader,
+            _ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            let default_host = self
+                .upstream
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_string();
+            let host = std::env::var("ATG_SNI").ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(default_host);
+            let _ = upstream_request.insert_header(http::header::HOST, host);
+            Ok(())
         }
 
         // Control endpoint: dump collected turn records as JSON.
@@ -221,9 +248,57 @@ pub mod gateway_app {
                 self.push_record(record);
             }
         }
+
+        fn fail_to_connect(
+            &self,
+            session: &mut Session,
+            peer: &HttpPeer,
+            _ctx: &mut Self::CTX,
+            e: Box<Error>,
+        ) -> Box<Error> {
+            let path = session.req_header().uri.path().to_string();
+            let peer = format!("{peer:?}");
+            let err = format!("{e:?}");
+            eprintln!("GATEWAY fail_to_connect: path={path} peer={peer} error={err}");
+            e
+        }
+
+        async fn fail_to_proxy(
+            &self,
+            session: &mut Session,
+            e: &Error,
+            _ctx: &mut Self::CTX,
+        ) -> FailToProxy {
+            let path = session.req_header().uri.path().to_string();
+            let err = format!("{e:?}");
+            eprintln!("GATEWAY fail_to_proxy: path={path} error={err}");
+            let code = match e.etype() {
+                pingora::HTTPStatus(code) => *code,
+                _ => match e.esource() {
+                    pingora::ErrorSource::Upstream => 502,
+                    pingora::ErrorSource::Downstream => {
+                        match e.etype() {
+                            pingora::WriteError | pingora::ReadError | pingora::ConnectionClosed => 0,
+                            _ => 400,
+                        }
+                    }
+                    _ => 500,
+                },
+            };
+            if code > 0 {
+                session.respond_error(code).await.unwrap_or_else(|e| {
+                    eprintln!("failed to send error response to downstream: {e}");
+                });
+            }
+            FailToProxy {
+                error_code: code,
+                can_reuse_downstream: false,
+            }
+        }
     }
 
     /// Start the gateway on `listen`, forwarding to `upstream`. Blocks.
+    /// `upstream` accepts "host:port", "http://host:port" or "https://host:port".
     pub fn run(listen: &str, upstream: &str) {
         let mut server = Server::new(Some(Opt::default())).unwrap();
         server.bootstrap();
